@@ -1,26 +1,31 @@
 import React, { useState } from 'react';
 import { GameMode } from '../types';
-import { Dice5, Sparkles, Loader2, Gift } from 'lucide-react';
+import { Dice5, Sparkles, Loader2, Gift, User } from 'lucide-react';
 import { generateThemedItems } from '../services/geminiService';
 
 interface GameSetupProps {
-  onStartGame: (mode: GameMode, items: (string | number)[], themeName: string, prize: string) => void;
-  // removed initialPlayerNames props as it's no longer needed
+  onStartGame: (mode: GameMode, items: (string | number)[], themeName: string, prize: string, hostName: string) => void;
 }
 
 const GameSetup: React.FC<GameSetupProps> = ({ onStartGame }) => {
   const [mode, setMode] = useState<GameMode>('STANDARD');
   const [themeInput, setThemeInput] = useState('');
   const [prizeInput, setPrizeInput] = useState('');
+  const [hostName, setHostName] = useState('Host');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleStart = async () => {
     setError(null);
+    if (!hostName.trim()) {
+        setError("Please enter a name for the Host.");
+        return;
+    }
+
     if (mode === 'STANDARD') {
       // Generate standard bingo numbers 1-75
       const numbers = Array.from({ length: 75 }, (_, i) => i + 1);
-      onStartGame('STANDARD', numbers, 'Classic Numbers', prizeInput || 'Bragging Rights');
+      onStartGame('STANDARD', numbers, 'Classic Numbers', prizeInput || 'Bragging Rights', hostName);
     } else {
       if (!themeInput.trim()) {
         setError("Please enter a theme for the AI to generate.");
@@ -29,7 +34,7 @@ const GameSetup: React.FC<GameSetupProps> = ({ onStartGame }) => {
       setIsLoading(true);
       try {
         const items = await generateThemedItems(themeInput);
-        onStartGame('THEMED', items, themeInput, prizeInput || 'Bragging Rights');
+        onStartGame('THEMED', items, themeInput, prizeInput || 'Bragging Rights', hostName);
       } catch (e: any) {
         setError(e.message || "Failed to generate theme.");
       } finally {
@@ -50,6 +55,20 @@ const GameSetup: React.FC<GameSetupProps> = ({ onStartGame }) => {
       </div>
 
       <div className="bg-white rounded-2xl shadow-xl p-8 border border-slate-100">
+        {/* Host Name Input */}
+        <div className="mb-6">
+            <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+              <User className="w-4 h-4 text-blue-600" /> Host Name
+            </label>
+            <input
+              type="text"
+              value={hostName}
+              onChange={(e) => setHostName(e.target.value)}
+              placeholder="Enter your name"
+              className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
+            />
+        </div>
+
         {/* Mode Selection */}
         <div className="flex flex-col md:flex-row gap-4 mb-8">
           <button

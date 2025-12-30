@@ -10,8 +10,10 @@ const App: React.FC = () => {
   const [role, setRole] = useState<AppRole>('LANDING');
   const [gameState, setGameState] = useState<GameState | null>(null);
 
-  const handleStartGame = (mode: GameMode, items: (string | number)[], themeName: string, prize: string) => {
-    // Start with 0 cards. Players join dynamically.
+  const handleStartGame = (mode: GameMode, items: (string | number)[], themeName: string, prize: string, hostName: string) => {
+    // Generate initial cards for the Host (Index 0)
+    const hostCards = generateCards(items, mode, [hostName], 0);
+
     setGameState({
       isSetup: false,
       mode,
@@ -20,7 +22,7 @@ const App: React.FC = () => {
       allItems: items,
       calledItems: [],
       currentCall: null,
-      cards: [], 
+      cards: hostCards, // Host starts with cards
       winnerIds: []
     });
   };

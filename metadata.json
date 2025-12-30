@@ -1,5 +1,8 @@
 {
   "name": "Jeser Bingo Party 2026",
   "description": "A multiplayer-ready virtual Bingo host. Generate standard or AI-themed cards for up to 10 players, track calls, and celebrate wins automatically.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
 }

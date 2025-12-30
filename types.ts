@@ -33,7 +33,7 @@ export interface GameState {
 
 export type AppRole = 'LANDING' | 'HOST' | 'PLAYER';
 
-export type MessageType = 'JOIN_REQUEST' | 'WELCOME' | 'NEXT_CALL' | 'GAME_RESET' | 'CLAIM_BINGO' | 'BINGO_ANNOUNCED' | 'NEW_GAME';
+export type MessageType = 'JOIN_REQUEST' | 'WELCOME' | 'NEXT_CALL' | 'GAME_RESET' | 'CLAIM_BINGO' | 'BINGO_ANNOUNCED' | 'NEW_GAME' | 'CHAT_MESSAGE';
 
 export interface NetworkMessage {
   type: MessageType;
@@ -52,4 +52,12 @@ export interface WelcomePayload {
 
 export interface JoinRequestPayload {
   playerName: string;
+}
+
+export interface ChatMessagePayload {
+  id: string;
+  sender: string;
+  text: string;
+  timestamp: number;
+  isSystem?: boolean;
 }
