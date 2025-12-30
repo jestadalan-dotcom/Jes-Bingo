@@ -45,3 +45,23 @@ export const THEME_COLORS = [
   'bg-pink-500',
   'bg-rose-500',
 ];
+
+// --- Networking Types ---
+
+export type AppRole = 'LANDING' | 'HOST' | 'PLAYER';
+
+export type MessageType = 'WELCOME' | 'NEXT_CALL' | 'GAME_RESET' | 'CLAIM_BINGO' | 'BINGO_ANNOUNCED';
+
+export interface NetworkMessage {
+  type: MessageType;
+  payload?: any;
+}
+
+export interface WelcomePayload {
+  playerIndex: number;
+  playerName: string;
+  cards: BingoCard[];
+  theme: string;
+  currentCall: string | number | null;
+  calledItems: (string | number)[];
+}

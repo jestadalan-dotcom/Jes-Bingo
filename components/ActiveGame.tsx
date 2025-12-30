@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { GameState, BingoCard, BingoCell } from '../types';
+import React, { useState, useEffect, useRef } from 'react';
+import { GameState, BingoCard, NetworkMessage, WelcomePayload, BingoCell } from '../types';
 import BingoBoard from './BingoBoard';
-import { RefreshCw, Play, Users, Trophy, LayoutGrid, ChevronLeft, ChevronRight, Volume2, VolumeX } from 'lucide-react';
+import { RefreshCw, Play, Users, Trophy, LayoutGrid, ChevronLeft, ChevronRight, Volume2, VolumeX, Link, Copy, BellRing } from 'lucide-react';
+import Peer, { DataConnection } from 'peerjs';
 
 interface ActiveGameProps {
   initialState: GameState;
@@ -10,23 +11,168 @@ interface ActiveGameProps {
 
 const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
   const [gameState, setGameState] = useState<GameState>(initialState);
-  const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0); // 0 to 9 (10 players)
+  // Ref to keep track of latest state in event listeners
+  const gameStateRef = useRef(initialState);
+  
+  const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0); 
   const [viewMode, setViewMode] = useState<'FOCUS' | 'ALL'>('FOCUS');
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [notifications, setNotifications] = useState<string[]>([]);
+  
+  // Networking State
+  const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [connectedPlayers, setConnectedPlayers] = useState<number[]>([]);
+  const peerRef = useRef<Peer | null>(null);
+  const connectionsRef = useRef<DataConnection[]>([]);
 
-  // Derive list of players from cards
+  // Sync Ref with State
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
+  const addNotification = (msg: string) => {
+    setNotifications(prev => [msg, ...prev].slice(0, 5));
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n !== msg));
+    }, 5000);
+  };
+
+  const broadcast = (msg: NetworkMessage) => {
+    connectionsRef.current.forEach(conn => {
+        if(conn.open) conn.send(msg);
+    });
+  };
+
+  // Initialize Host Server (PeerJS)
+  useEffect(() => {
+    const peer = new Peer();
+    
+    peer.on('open', (id) => {
+      console.log('Host ID:', id);
+      setRoomCode(id);
+    });
+
+    peer.on('connection', (conn) => {
+      conn.on('open', () => {
+        const currentConnections = connectionsRef.current;
+        if (currentConnections.length >= 10) {
+          conn.close(); 
+          return;
+        }
+
+        connectionsRef.current.push(conn);
+        
+        const playerIndex = connectionsRef.current.length - 1;
+        setConnectedPlayers(prev => [...prev, playerIndex]);
+
+        // Access state via ref to avoid stale closure
+        const currentGameState = gameStateRef.current;
+        const playerCards = currentGameState.cards.filter(c => c.ownerIndex === playerIndex);
+        
+        const welcomeMsg: NetworkMessage = {
+          type: 'WELCOME',
+          payload: {
+            playerIndex,
+            playerName: `Player ${playerIndex + 1}`,
+            cards: playerCards,
+            theme: currentGameState.theme,
+            currentCall: currentGameState.currentCall,
+            calledItems: currentGameState.calledItems
+          } as WelcomePayload
+        };
+        conn.send(welcomeMsg);
+      });
+
+      conn.on('data', (data: any) => {
+        const msg = data as NetworkMessage;
+        
+        if (msg.type === 'CLAIM_BINGO') {
+          const { cardId, playerIndex } = msg.payload;
+          const currentGameState = gameStateRef.current;
+          
+          // Verify Bingo on Server Side (Trust but Verify)
+          const card = currentGameState.cards.find(c => c.id === cardId);
+          if (card) {
+            // Check if this card ACTUALLY has a bingo based on calledItems
+            // We reconstruct the cells and mark them based on called items, not user input
+            const verifiedCells = card.cells.map(cell => ({
+               ...cell,
+               marked: cell.isFreeSpace || currentGameState.calledItems.includes(cell.value)
+            }));
+            
+            const hasVerifiedBingo = checkForWin(verifiedCells);
+
+            if (hasVerifiedBingo) {
+               addNotification(`🎉 Player ${playerIndex + 1} called BINGO!`);
+               
+               // Mark this card as a winner in local state if not already
+               if (!currentGameState.winnerIds.includes(cardId)) {
+                   setGameState(prev => ({
+                       ...prev,
+                       winnerIds: [...prev.winnerIds, cardId]
+                   }));
+                   // Play sound
+                   if(soundEnabled) {
+                     const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3'); 
+                     audio.volume = 0.8;
+                     audio.play().catch(() => {});
+                   }
+                   // Announce to all
+                   broadcast({ type: 'BINGO_ANNOUNCED', payload: { playerIndex, cardId } });
+               }
+            } else {
+               addNotification(`⚠️ Player ${playerIndex + 1} called a false Bingo!`);
+            }
+          }
+        }
+      });
+
+      conn.on('close', () => {
+        console.log('Player disconnected');
+      });
+    });
+
+    peerRef.current = peer;
+
+    return () => {
+      peer.destroy();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); 
+
+  const checkForWin = (cells: BingoCell[]) => {
+      // Rows
+      for (let i = 0; i < 5; i++) {
+        if (cells.slice(i * 5, (i + 1) * 5).every(c => c.marked)) return true;
+      }
+      // Cols
+      for (let i = 0; i < 5; i++) {
+        let colComplete = true;
+        for (let j = 0; j < 5; j++) {
+          if (!cells[i + j * 5].marked) colComplete = false;
+        }
+        if (colComplete) return true;
+      }
+      // Diagonals
+      if ([0, 6, 12, 18, 24].every(idx => cells[idx].marked)) return true;
+      if ([4, 8, 12, 16, 20].every(idx => cells[idx].marked)) return true;
+      
+      return false;
+  };
+
   const playersList = Array.from({ length: 10 }, (_, i) => {
     const playerCard = gameState.cards.find(c => c.ownerIndex === i);
+    const isConnected = connectedPlayers.includes(i);
     return {
       index: i,
       name: playerCard?.playerName || `Player ${i + 1}`,
-      cards: gameState.cards.filter(c => c.ownerIndex === i)
+      cards: gameState.cards.filter(c => c.ownerIndex === i),
+      connected: isConnected
     };
   });
 
   const activePlayer = playersList[currentPlayerIndex];
 
-  // Helper to format call with letter (B 5)
   const getFormattedCall = (val: string | number | null) => {
     if (!val) return { letter: '', main: '-' };
     if (gameState.mode === 'THEMED') return { letter: '', main: val };
@@ -46,33 +192,23 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
 
   const currentDisplay = getFormattedCall(gameState.currentCall);
 
-  // Check for wins whenever cards change
+  // Auto-update winners based on what Host sees (Manual marking or auto-verification)
+  // We keep this to visualize wins on the host board if the host is manually tracking too
   useEffect(() => {
     const newWinnerIds: string[] = [];
+    // We only update state if we find a NEW winner locally to avoid loops
+    // But the PeerJS handler also updates state.
+    
+    // To enable "Host Mode Auto-Marking" visualization (optional but nice):
+    // If we wanted to auto-mark cards on the host when a number is called:
+    // We would do it in callNextNumber.
+    // For now, we rely on PeerJS verification for official wins, but we still check for local 'marked' wins.
     
     const updatedCards = gameState.cards.map(card => {
-      // Check rows
-      let hasLine = false;
-      for (let i = 0; i < 5; i++) {
-        if (card.cells.slice(i * 5, (i + 1) * 5).every(c => c.marked || c.isFreeSpace)) hasLine = true;
-      }
-      // Check cols
-      for (let i = 0; i < 5; i++) {
-        let colComplete = true;
-        for (let j = 0; j < 5; j++) {
-          const cell = card.cells[i + j * 5];
-          if (!cell.marked && !cell.isFreeSpace) colComplete = false;
-        }
-        if (colComplete) hasLine = true;
-      }
-      // Check diagonals
-      if ([0, 6, 12, 18, 24].every(idx => card.cells[idx].marked || card.cells[idx].isFreeSpace)) hasLine = true;
-      if ([4, 8, 12, 16, 20].every(idx => card.cells[idx].marked || card.cells[idx].isFreeSpace)) hasLine = true;
-
-      if (hasLine && !gameState.winnerIds.includes(card.id)) {
+       const hasLine = checkForWin(card.cells);
+       if (hasLine && !gameState.winnerIds.includes(card.id)) {
         newWinnerIds.push(card.id);
       }
-      
       return { ...card, hasBingo: hasLine };
     });
 
@@ -82,19 +218,14 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
         cards: updatedCards,
         winnerIds: [...prev.winnerIds, ...newWinnerIds]
       }));
-      // Play sound
-      if(soundEnabled) {
-          const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3'); 
-          audio.volume = 0.5;
-          audio.play().catch(e => console.log('Audio play failed', e));
-      }
     } else {
-        if (JSON.stringify(updatedCards) !== JSON.stringify(gameState.cards)) {
-            setGameState(prev => ({ ...prev, cards: updatedCards }));
+        // Just sync 'hasBingo' visual state without adding to winnerIds if already there
+        const hasChanges = JSON.stringify(updatedCards.map(c => c.hasBingo)) !== JSON.stringify(gameState.cards.map(c => c.hasBingo));
+        if (hasChanges) {
+           setGameState(prev => ({ ...prev, cards: updatedCards }));
         }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameState.calledItems]); 
+  }, [gameState.cards, gameState.calledItems]); 
 
 
   const callNextNumber = () => {
@@ -106,7 +237,6 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
 
     if (soundEnabled && 'speechSynthesis' in window) {
       let text = String(nextItem);
-      // Add letter to speech if in Standard mode
       if (gameState.mode === 'STANDARD') {
         const { letter } = getFormattedCall(nextItem);
         text = `${letter} ${nextItem}`;
@@ -115,38 +245,83 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
       window.speechSynthesis.speak(utterance);
     }
 
-    setGameState(prev => ({
-      ...prev,
-      calledItems: [nextItem, ...prev.calledItems],
-      currentCall: nextItem
-    }));
+    setGameState(prev => {
+        // Auto-mark logic for Host View:
+        // When a number is called, we update the Host's cards so they can see who has it.
+        const updatedCards = prev.cards.map(card => ({
+            ...card,
+            cells: card.cells.map(cell => 
+                cell.value === nextItem ? { ...cell, marked: true } : cell
+            )
+        }));
+        
+        return {
+            ...prev,
+            calledItems: [nextItem, ...prev.calledItems],
+            currentCall: nextItem,
+            cards: updatedCards
+        };
+    });
+
+    broadcast({
+      type: 'NEXT_CALL',
+      payload: nextItem
+    });
   };
 
   const handleCellClick = (cardId: string, cellId: string) => {
     setGameState(prev => {
       const updatedCards = prev.cards.map(card => {
         if (card.id !== cardId) return card;
-        
         const updatedCells = card.cells.map(cell => {
           if (cell.id !== cellId) return cell;
           return { ...cell, marked: !cell.marked };
         });
-
         return { ...card, cells: updatedCells };
       });
       return { ...prev, cards: updatedCards };
     });
   };
 
+  const copyRoomLink = () => {
+    if (roomCode) {
+      navigator.clipboard.writeText(roomCode);
+      alert("Room Code copied to clipboard!");
+    }
+  };
+
   const totalBingos = gameState.winnerIds.length;
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 overflow-hidden">
+      {/* Toast Notifications */}
+      <div className="fixed top-24 right-4 z-50 flex flex-col gap-2">
+          {notifications.map((note, idx) => (
+              <div key={idx} className="bg-slate-800 text-white px-4 py-3 rounded-lg shadow-xl animate-fade-in flex items-center gap-2">
+                  <BellRing className="w-5 h-5 text-yellow-400" />
+                  {note}
+              </div>
+          ))}
+      </div>
+
       {/* Top Bar - Host Controls */}
       <header className="bg-white border-b border-slate-200 p-3 md:p-4 shadow-sm z-20 flex-none">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
           
           <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-start">
+            
+            {/* Room Info */}
+            <div className="flex flex-col">
+               <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  <Link className="w-3 h-3"/> Room Code
+               </div>
+               <button onClick={copyRoomLink} className="flex items-center gap-2 font-mono font-bold text-lg hover:text-blue-600 transition-colors" title="Click to Copy">
+                 {roomCode ? <>{roomCode} <Copy className="w-4 h-4 text-slate-400" /></> : <span className="animate-pulse">Creating Room...</span>}
+               </button>
+            </div>
+
+            <div className="w-px h-10 bg-slate-200 hidden md:block"></div>
+
             {/* Current Call Display */}
             <div className="bg-slate-900 text-white rounded-lg px-4 py-2 text-center min-w-[110px] md:min-w-[140px] shadow-md ring-2 ring-slate-100">
               <div className="text-[10px] md:text-xs text-slate-400 uppercase font-bold tracking-wider mb-0.5">Current Call</div>
@@ -174,7 +349,6 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
           </div>
 
           <div className="flex items-center gap-3 overflow-x-auto w-full md:w-auto pb-2 md:pb-0 hide-scrollbar">
-             {/* Last 5 calls */}
              {gameState.calledItems.slice(1, 6).map((item, idx) => {
                 const display = getFormattedCall(item);
                 return (
@@ -209,7 +383,6 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
       {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto bg-slate-50 relative p-4">
         
-        {/* Winner Banner */}
         {totalBingos > 0 && (
            <div className="fixed top-24 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
               <div className="bg-yellow-400 text-yellow-900 border-4 border-yellow-500 px-6 py-2 rounded-full font-black text-xl shadow-xl flex items-center gap-2 animate-bounce">
@@ -221,7 +394,6 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
 
         {viewMode === 'FOCUS' ? (
           <div className="max-w-7xl mx-auto flex flex-col h-full">
-            {/* Player Selector for Focus Mode */}
             <div className="flex items-center justify-center gap-4 mb-4 md:mb-6 sticky top-0 z-10 py-2 bg-slate-50/90 backdrop-blur-sm">
                <button 
                   onClick={() => setCurrentPlayerIndex(prev => Math.max(0, prev - 1))}
@@ -232,7 +404,10 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
                </button>
                
                <div className="text-center min-w-[200px] bg-white px-6 py-2 rounded-xl shadow-sm border border-slate-200">
-                  <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">Viewing Player {currentPlayerIndex + 1}/10</div>
+                  <div className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1 flex items-center justify-center gap-2">
+                    Viewing Player {currentPlayerIndex + 1}/10
+                    {activePlayer.connected ? <span className="w-2 h-2 rounded-full bg-green-500"></span> : <span className="w-2 h-2 rounded-full bg-slate-300"></span>}
+                  </div>
                   <div className="text-xl md:text-2xl font-black text-slate-800 truncate">{activePlayer.name}</div>
                </div>
 
@@ -245,7 +420,6 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
                </button>
             </div>
             
-            {/* 4 Card Grid for Active Player */}
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-4 md:gap-8 pb-10 justify-items-center">
               {activePlayer.cards.map((card, idx) => (
                 <div key={card.id} className="w-full max-w-[400px]">
@@ -274,16 +448,18 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
                         setViewMode('FOCUS');
                       }}
                       className={`
-                        p-4 rounded-xl border-2 text-left transition-all hover:scale-[1.02]
+                        p-4 rounded-xl border-2 text-left transition-all hover:scale-[1.02] relative
                         ${playerWins > 0 ? 'bg-yellow-50 border-yellow-400' : 'bg-white border-slate-200 hover:border-blue-300'}
                       `}
                     >
+                      {player.connected && (
+                          <div className="absolute top-2 right-2 w-3 h-3 bg-green-500 rounded-full ring-2 ring-white" title="Connected"></div>
+                      )}
                       <div className="flex justify-between items-start mb-2">
                          <div className="font-bold text-lg truncate pr-2">{player.name}</div>
                          {playerWins > 0 && <Trophy className="w-5 h-5 text-yellow-600" />}
                       </div>
                       
-                      {/* Mini visual representation of cards */}
                       <div className="grid grid-cols-2 gap-2 mt-2">
                         {player.cards.map(c => (
                           <div key={c.id} className={`h-8 rounded flex items-center justify-center text-xs font-bold ${c.hasBingo ? 'bg-yellow-400 text-yellow-900' : 'bg-slate-100 text-slate-400'}`}>
@@ -299,9 +475,8 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onReset }) => {
         )}
       </main>
       
-      {/* Footer Info */}
       <footer className="bg-white border-t p-2 text-center text-xs text-slate-400 flex-none">
-         Playing: <span className="font-bold text-slate-600">{gameState.theme}</span> | Players: 10
+         Playing: <span className="font-bold text-slate-600">{gameState.theme}</span> | Players Connected: {connectedPlayers.length}/10
       </footer>
     </div>
   );

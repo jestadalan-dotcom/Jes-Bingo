@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
-import { GameMode, GameState, BingoCard, BingoCell, THEME_COLORS } from './types';
+import { GameMode, GameState, BingoCard, BingoCell, THEME_COLORS, AppRole } from './types';
 import GameSetup from './components/GameSetup';
 import ActiveGame from './components/ActiveGame';
+import Landing from './components/Landing';
+import PlayerClient from './components/PlayerClient';
 
 const App: React.FC = () => {
+  const [role, setRole] = useState<AppRole>('LANDING');
   const [gameState, setGameState] = useState<GameState | null>(null);
 
   const generateCards = (items: (string | number)[], themeMode: GameMode, playerNames: string[]): BingoCard[] => {
@@ -96,15 +99,30 @@ const App: React.FC = () => {
   };
 
   const handleReset = () => {
-    if (window.confirm("Are you sure you want to end this game and start over?")) {
+    if (window.confirm("Are you sure you want to end this game?")) {
       setGameState(null);
+      setRole('LANDING');
     }
   };
 
+  if (role === 'LANDING') {
+    return <Landing onChooseRole={setRole} />;
+  }
+
+  if (role === 'PLAYER') {
+    return <PlayerClient onBack={() => setRole('LANDING')} />;
+  }
+
+  // Host Mode
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
       {!gameState ? (
-        <GameSetup onStartGame={handleStartGame} />
+        <>
+          <div className="p-4">
+            <button onClick={() => setRole('LANDING')} className="text-slate-500 hover:text-slate-800 font-bold mb-4">← Back</button>
+          </div>
+          <GameSetup onStartGame={handleStartGame} />
+        </>
       ) : (
         <ActiveGame initialState={gameState} onReset={handleReset} />
       )}
