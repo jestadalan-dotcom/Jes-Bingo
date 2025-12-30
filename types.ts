@@ -7,7 +7,7 @@ export interface BingoCell {
 
 export interface BingoCard {
   id: string;
-  ownerIndex: number; // 0-9
+  ownerIndex: number;
   cardIndex: number; // 0-3
   playerName: string;
   cells: BingoCell[]; // Flat array of 25 cells
@@ -21,36 +21,19 @@ export interface GameState {
   isSetup: boolean;
   mode: GameMode;
   theme: string;
+  prize: string;
   allItems: (string | number)[]; // The pool of all possible call items
   calledItems: (string | number)[]; // History of called items
   currentCall: string | number | null;
-  cards: BingoCard[]; // All 40 cards (10 players * 4 cards)
+  cards: BingoCard[]; // All cards in play
   winnerIds: string[]; // IDs of cards that won
 }
-
-export const THEME_COLORS = [
-  'bg-red-500',
-  'bg-orange-500',
-  'bg-amber-500',
-  'bg-green-500',
-  'bg-emerald-500',
-  'bg-teal-500',
-  'bg-cyan-500',
-  'bg-sky-500',
-  'bg-blue-500',
-  'bg-indigo-500',
-  'bg-violet-500',
-  'bg-purple-500',
-  'bg-fuchsia-500',
-  'bg-pink-500',
-  'bg-rose-500',
-];
 
 // --- Networking Types ---
 
 export type AppRole = 'LANDING' | 'HOST' | 'PLAYER';
 
-export type MessageType = 'WELCOME' | 'NEXT_CALL' | 'GAME_RESET' | 'CLAIM_BINGO' | 'BINGO_ANNOUNCED';
+export type MessageType = 'JOIN_REQUEST' | 'WELCOME' | 'NEXT_CALL' | 'GAME_RESET' | 'CLAIM_BINGO' | 'BINGO_ANNOUNCED' | 'NEW_GAME';
 
 export interface NetworkMessage {
   type: MessageType;
@@ -62,6 +45,11 @@ export interface WelcomePayload {
   playerName: string;
   cards: BingoCard[];
   theme: string;
+  prize: string;
   currentCall: string | number | null;
   calledItems: (string | number)[];
+}
+
+export interface JoinRequestPayload {
+  playerName: string;
 }

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Peer, { DataConnection } from 'peerjs';
-import { BingoCard, NetworkMessage, WelcomePayload, BingoCell } from '../types';
+import { BingoCard, NetworkMessage, WelcomePayload, BingoCell, JoinRequestPayload } from '../types';
 import BingoBoard from './BingoBoard';
-import { Loader2, Wifi, WifiOff, Trophy, AlertCircle, Megaphone } from 'lucide-react';
+import { Loader2, Wifi, WifiOff, Trophy, AlertCircle, Megaphone, Gift, User } from 'lucide-react';
 
 interface PlayerClientProps {
   onBack: () => void;
@@ -10,13 +10,15 @@ interface PlayerClientProps {
 
 const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
   const [roomId, setRoomId] = useState('');
-  const [status, setStatus] = useState<'IDLE' | 'CONNECTING' | 'CONNECTED' | 'ERROR'>('IDLE');
+  const [playerName, setPlayerName] = useState('');
+  const [status, setStatus] = useState<'IDLE' | 'CONNECTING' | 'WAITING_FOR_HOST' | 'CONNECTED' | 'ERROR'>('IDLE');
   const [errorMsg, setErrorMsg] = useState('');
   
   // Game Data
   const [cards, setCards] = useState<BingoCard[]>([]);
   const [playerIndex, setPlayerIndex] = useState<number | null>(null);
   const [theme, setTheme] = useState('');
+  const [prize, setPrize] = useState('');
   const [currentCall, setCurrentCall] = useState<string | number | null>(null);
   const [calledItems, setCalledItems] = useState<(string|number)[]>([]);
   const [lastCall, setLastCall] = useState<string | number | null>(null);
@@ -26,19 +28,27 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
   const connRef = useRef<DataConnection | null>(null);
 
   const connectToRoom = () => {
-    if (!roomId) return;
+    if (!roomId || !playerName) return;
     setStatus('CONNECTING');
     
     const peer = new Peer();
     peerRef.current = peer;
 
     peer.on('open', (myId) => {
-      const conn = peer.connect(roomId);
+      // Uppercase input to match host generation
+      const conn = peer.connect(roomId.toUpperCase());
       connRef.current = conn;
 
       conn.on('open', () => {
-        setStatus('CONNECTED');
+        setStatus('WAITING_FOR_HOST');
         setErrorMsg('');
+        
+        // Send Join Request
+        const joinMsg: NetworkMessage = {
+            type: 'JOIN_REQUEST',
+            payload: { playerName } as JoinRequestPayload
+        };
+        conn.send(joinMsg);
       });
 
       conn.on('data', (data: any) => {
@@ -70,11 +80,25 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       setCards(payload.cards);
       setPlayerIndex(payload.playerIndex);
       setTheme(payload.theme);
+      setPrize(payload.prize);
       setCalledItems(payload.calledItems);
       if (payload.currentCall) {
           setCurrentCall(payload.currentCall);
           setLastCall(payload.currentCall);
       }
+      setStatus('CONNECTED');
+    } else if (msg.type === 'NEW_GAME') {
+      // Reset State for New Round
+      const payload = msg.payload as WelcomePayload;
+      setCards(payload.cards);
+      setTheme(payload.theme);
+      setPrize(payload.prize);
+      
+      setCalledItems([]);
+      setCurrentCall(null);
+      setLastCall(null);
+      setAnnouncedWinners([]);
+      
     } else if (msg.type === 'NEXT_CALL') {
       const val = msg.payload;
       setCurrentCall(val);
@@ -83,8 +107,6 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
     } else if (msg.type === 'BINGO_ANNOUNCED') {
       const { playerIndex: winnerIdx, cardId } = msg.payload;
       setAnnouncedWinners(prev => [...prev, cardId]);
-      
-      // If I am the winner, show celebration (handled by render logic)
     }
   };
 
@@ -151,12 +173,26 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
            
            <div className="space-y-4">
              <div>
-               <label className="block text-sm font-bold text-slate-700 mb-1">Room Code</label>
+               <label className="block text-sm font-bold text-slate-700 mb-1">Your Name</label>
+               <div className="relative">
+                 <User className="absolute left-3 top-3.5 text-slate-400 w-5 h-5" />
+                 <input 
+                   value={playerName}
+                   onChange={(e) => setPlayerName(e.target.value)}
+                   className="w-full pl-10 pr-4 py-3 border-2 border-slate-200 rounded-lg focus:border-purple-500 outline-none"
+                   placeholder="Enter your name"
+                 />
+               </div>
+             </div>
+
+             <div>
+               <label className="block text-sm font-bold text-slate-700 mb-1">Room Code (8 Chars)</label>
                <input 
                  value={roomId}
                  onChange={(e) => setRoomId(e.target.value)}
+                 maxLength={8}
                  className="w-full text-center text-2xl font-mono tracking-widest p-3 border-2 border-slate-200 rounded-lg focus:border-purple-500 outline-none uppercase"
-                 placeholder="UUID"
+                 placeholder="XXXXXXXX"
                />
              </div>
 
@@ -168,7 +204,7 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
 
              <button 
                onClick={connectToRoom}
-               disabled={!roomId || status === 'CONNECTING'}
+               disabled={!roomId || !playerName || status === 'CONNECTING'}
                className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
              >
                {status === 'CONNECTING' ? <Loader2 className="animate-spin" /> : <Wifi />}
@@ -181,6 +217,16 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       </div>
     );
   }
+  
+  if (status === 'WAITING_FOR_HOST') {
+      return (
+          <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 flex-col">
+              <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
+              <h2 className="text-xl font-bold text-slate-700">Connecting to Host...</h2>
+              <p className="text-slate-400">Waiting for game data...</p>
+          </div>
+      )
+  }
 
   // Connected View
   return (
@@ -189,7 +235,7 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
           <div className="max-w-md mx-auto flex items-center justify-between">
              <div>
                <div className="text-xs font-bold text-slate-400">PLAYING AS</div>
-               <div className="font-black text-lg text-slate-800">Player {playerIndex !== null ? playerIndex + 1 : '?'}</div>
+               <div className="font-black text-lg text-slate-800">{playerName}</div>
              </div>
              
              <div className="text-right">
@@ -198,6 +244,11 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
              </div>
           </div>
        </header>
+       
+       <div className="bg-slate-800 text-white text-center py-1 text-xs font-bold flex items-center justify-center gap-2 shadow-inner">
+         <Gift className="w-3 h-3 text-yellow-400" />
+         PRIZE: {prize || 'Bragging Rights'}
+      </div>
        
        {lastCall && (
            <div className="bg-blue-600 text-white p-2 text-center text-sm font-bold animate-pulse">
