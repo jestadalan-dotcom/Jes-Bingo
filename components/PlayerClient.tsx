@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import Peer, { DataConnection } from 'peerjs';
 import { BingoCard, NetworkMessage, WelcomePayload, BingoCell, JoinRequestPayload } from '../types';
 import BingoBoard from './BingoBoard';
-import { Loader2, Wifi, WifiOff, Trophy, AlertCircle, Megaphone, Gift, User } from 'lucide-react';
+import { Loader2, Wifi, WifiOff, Trophy, AlertCircle, Megaphone, Gift, User, CheckCircle2, XCircle, PartyPopper } from 'lucide-react';
 
 interface PlayerClientProps {
   onBack: () => void;
@@ -23,6 +23,10 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
   const [calledItems, setCalledItems] = useState<(string|number)[]>([]);
   const [lastCall, setLastCall] = useState<string | number | null>(null);
   const [announcedWinners, setAnnouncedWinners] = useState<string[]>([]); // Card IDs that have officially won
+  
+  // UI State
+  const [confirmingBingoCardId, setConfirmingBingoCardId] = useState<string | null>(null);
+  const [winnerAnnouncement, setWinnerAnnouncement] = useState<string | null>(null);
 
   const peerRef = useRef<Peer | null>(null);
   const connRef = useRef<DataConnection | null>(null);
@@ -88,7 +92,7 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       }
       setStatus('CONNECTED');
     } else if (msg.type === 'NEW_GAME') {
-      // Reset State for New Round
+      // Direct New Game Payload
       const payload = msg.payload as WelcomePayload;
       setCards(payload.cards);
       setTheme(payload.theme);
@@ -98,7 +102,25 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       setCurrentCall(null);
       setLastCall(null);
       setAnnouncedWinners([]);
+      setWinnerAnnouncement(null);
+      setConfirmingBingoCardId(null);
       
+    } else if (msg.type === 'GAME_RESET') {
+        // Trigger a re-join to fetch new cards
+        if (connRef.current && playerName) {
+            setCards([]);
+            setCurrentCall(null);
+            setLastCall(null);
+            setAnnouncedWinners([]);
+            setWinnerAnnouncement(null);
+            setConfirmingBingoCardId(null);
+            
+            const joinMsg: NetworkMessage = {
+                type: 'JOIN_REQUEST',
+                payload: { playerName } as JoinRequestPayload
+            };
+            connRef.current.send(joinMsg);
+        }
     } else if (msg.type === 'NEXT_CALL') {
       const val = msg.payload;
       setCurrentCall(val);
@@ -107,6 +129,21 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
     } else if (msg.type === 'BINGO_ANNOUNCED') {
       const { playerIndex: winnerIdx, cardId } = msg.payload;
       setAnnouncedWinners(prev => [...prev, cardId]);
+      
+      // Find winner name
+      // We only know our own cards. If it's us, we celebrate.
+      // If it's someone else, we rely on a future refactor to send Winner Name,
+      // but for now, we can only confirm OUR wins or general wins.
+      // Wait, ActiveGame now broadcasts this to everyone. 
+      // If I am not the winner, I just see the notification.
+      // Let's deduce the name if it is in my card list.
+      const winningCard = cards.find(c => c.id === cardId);
+      if (winningCard) {
+          setWinnerAnnouncement(`YOU WON!`);
+      } else {
+          setWinnerAnnouncement(`BINGO CLAIMED!`);
+      }
+      setTimeout(() => setWinnerAnnouncement(null), 5000);
     }
   };
 
@@ -148,13 +185,22 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
     });
   };
   
-  const callBingo = (cardId: string) => {
-    if (connRef.current) {
+  const initiateBingoCall = (cardId: string) => {
+      setConfirmingBingoCardId(cardId);
+  };
+  
+  const confirmBingo = () => {
+    if (connRef.current && confirmingBingoCardId) {
       connRef.current.send({
         type: 'CLAIM_BINGO',
-        payload: { cardId, playerIndex }
+        payload: { cardId: confirmingBingoCardId, playerIndex }
       });
+      setConfirmingBingoCardId(null);
     }
+  };
+  
+  const cancelBingo = () => {
+      setConfirmingBingoCardId(null);
   };
   
   // Determine if we should show the "Call Bingo" button
@@ -230,7 +276,42 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
 
   // Connected View
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col">
+    <div className="min-h-screen bg-slate-100 flex flex-col relative">
+       {/* Bingo Confirmation Modal */}
+       {confirmingBingoCardId && (
+           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+               <div className="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
+               <div className="relative bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl animate-fade-in">
+                   <h3 className="text-2xl font-black text-slate-800 mb-2">Call Bingo?</h3>
+                   <p className="text-slate-500 mb-6">Are you sure you have a valid Bingo? False calls might be booed!</p>
+                   <div className="flex gap-3">
+                       <button 
+                          onClick={cancelBingo}
+                          className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl flex items-center justify-center gap-2"
+                       >
+                           <XCircle className="w-5 h-5"/> Cancel
+                       </button>
+                       <button 
+                          onClick={confirmBingo}
+                          className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-red-200"
+                       >
+                           <Megaphone className="w-5 h-5"/> SCREAM IT!
+                       </button>
+                   </div>
+               </div>
+           </div>
+       )}
+
+       {/* Winner Announcement Overlay */}
+       {winnerAnnouncement && (
+           <div className="fixed inset-0 z-[50] flex items-center justify-center pointer-events-none">
+              <div className="bg-yellow-400 text-yellow-900 border-b-8 border-yellow-600 w-full py-12 flex flex-col items-center justify-center shadow-2xl animate-bounce-in opacity-95">
+                 <PartyPopper className="w-16 h-16 mb-4 animate-pulse" />
+                 <h2 className="text-4xl md:text-6xl font-black uppercase tracking-widest">{winnerAnnouncement}</h2>
+              </div>
+           </div>
+       )}
+
        <header className="bg-white border-b border-slate-200 p-4 shadow-sm sticky top-0 z-20">
           <div className="max-w-md mx-auto flex items-center justify-between">
              <div>
@@ -257,10 +338,10 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
        )}
 
        {/* Floating Action Button for Calling Bingo */}
-       {winningCard && (
-         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-bounce">
+       {winningCard && !confirmingBingoCardId && (
+         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 animate-bounce">
             <button 
-              onClick={() => callBingo(winningCard.id)}
+              onClick={() => initiateBingoCall(winningCard.id)}
               className="bg-red-600 text-white border-4 border-red-800 rounded-full px-8 py-4 font-black text-2xl shadow-2xl flex items-center gap-3 hover:bg-red-700 hover:scale-105 transition-all"
             >
               <Megaphone className="w-8 h-8" />
@@ -270,13 +351,13 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
        )}
 
        {hasOfficialWin && (
-         <div className="fixed inset-x-0 top-32 z-40 pointer-events-none flex justify-center">
-            <div className="bg-yellow-400 text-yellow-900 border-4 border-yellow-600 px-8 py-4 rounded-xl shadow-2xl transform rotate-3">
-               <div className="flex items-center gap-3 font-black text-2xl">
-                 <Trophy className="w-8 h-8" />
-                 WIN CONFIRMED!
-               </div>
-               <div className="text-center font-bold text-sm mt-1">Great Job!</div>
+         <div className="fixed inset-x-0 top-32 z-30 pointer-events-none flex justify-center">
+            <div className="bg-green-500 text-white border-4 border-green-700 px-8 py-4 rounded-xl shadow-2xl transform rotate-3 flex items-center gap-3">
+                 <CheckCircle2 className="w-8 h-8" />
+                 <div>
+                    <div className="font-black text-2xl">BINGO CONFIRMED!</div>
+                    <div className="text-xs font-bold opacity-80">Wait for the next round</div>
+                 </div>
             </div>
          </div>
        )}

@@ -18,12 +18,17 @@ const BingoBoard: React.FC<BingoBoardProps> = ({ card, onCellClick, isViewOnly =
   };
 
   return (
-    <div className="w-full bg-white rounded-xl shadow-xl overflow-hidden border-4 border-slate-800">
+    <div className={`
+        w-full bg-white rounded-xl shadow-xl overflow-hidden border-4 
+        ${card.hasBingo ? 'border-yellow-400 ring-4 ring-yellow-200 ring-offset-2 animate-pulse' : 'border-slate-800'}
+        transition-all duration-500
+    `}>
       {/* Header */}
-      <div className={`py-2 px-3 ${card.colorTheme} flex justify-between items-center text-white h-12`}>
-        <h3 className="font-bold text-lg uppercase tracking-wider truncate mr-2">{card.playerName}</h3>
+      <div className={`py-2 px-3 ${card.colorTheme} flex justify-between items-center text-white h-12 relative overflow-hidden`}>
+        {card.hasBingo && <div className="absolute inset-0 bg-white/20 animate-pulse"></div>}
+        <h3 className="font-bold text-lg uppercase tracking-wider truncate mr-2 relative z-10">{card.playerName}</h3>
         {card.hasBingo && (
-          <span className="bg-yellow-400 text-yellow-900 text-[10px] font-black px-2 py-0.5 rounded animate-bounce">
+          <span className="bg-yellow-400 text-yellow-900 text-[10px] font-black px-2 py-0.5 rounded animate-bounce relative z-10 shadow-lg">
             BINGO!
           </span>
         )}

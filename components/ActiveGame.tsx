@@ -3,7 +3,7 @@ import { GameState, BingoCard, NetworkMessage, WelcomePayload, BingoCell, GameMo
 import BingoBoard from './BingoBoard';
 import GameSetup from './GameSetup';
 import { generateCards } from '../gameUtils';
-import { RefreshCw, Play, Users, Trophy, LayoutGrid, ChevronLeft, ChevronRight, Volume2, VolumeX, Link, Copy, BellRing, Gift, X, UserPlus } from 'lucide-react';
+import { RefreshCw, Play, Users, Trophy, LayoutGrid, ChevronLeft, ChevronRight, Volume2, VolumeX, Link, Copy, BellRing, Gift, X, UserPlus, PartyPopper } from 'lucide-react';
 import Peer, { DataConnection } from 'peerjs';
 
 interface ActiveGameProps {
@@ -22,13 +22,13 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
   const [notifications, setNotifications] = useState<string[]>([]);
   const [showSetupModal, setShowSetupModal] = useState(false);
   
+  // Celebration State
+  const [latestWinner, setLatestWinner] = useState<{name: string, cardIndex: number} | null>(null);
+  
   // Networking State
   const [roomCode, setRoomCode] = useState<string | null>(null);
   
-  // Track connections and map them to player indices
-  // We need to store who is who. A simple array of connections might desync from ownerIndex if we aren't careful.
-  // We will trust the order of connection for ownerIndex for simplicity, or we can use connection ID.
-  // For this version: connectedPlayersRef will hold connections in order of index.
+  // Track connections. We keep them in a list, but we don't strictly bind index to array position anymore.
   const connectionsRef = useRef<DataConnection[]>([]);
   const peerRef = useRef<Peer | null>(null);
 
@@ -77,32 +77,48 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
 
         if (msg.type === 'JOIN_REQUEST') {
            const { playerName } = msg.payload as JoinRequestPayload;
-           
-           // Determine new player index
-           const newPlayerIndex = connectionsRef.current.length;
-           
-           // Add to connections list
-           connectionsRef.current.push(conn);
-           
            const currentGameState = gameStateRef.current;
            
-           // Generate Cards for this single new player
-           const newCards = generateCards(currentGameState.allItems, currentGameState.mode, [playerName], newPlayerIndex);
+           // Logic: Check if player exists (Rejoin) or is New
+           const existingPlayerCard = currentGameState.cards.find(c => c.playerName.toLowerCase() === playerName.toLowerCase());
            
-           // Update Game State
-           setGameState(prev => ({
-             ...prev,
-             cards: [...prev.cards, ...newCards]
-           }));
-           addNotification(`${playerName} joined the party!`);
+           let targetIndex: number;
+           let cardsToSend: BingoCard[];
+           let isRejoin = false;
+
+           if (existingPlayerCard) {
+               // REJOIN: Restore identity
+               isRejoin = true;
+               targetIndex = existingPlayerCard.ownerIndex;
+               cardsToSend = currentGameState.cards.filter(c => c.ownerIndex === targetIndex);
+               addNotification(`${playerName} reconnected!`);
+           } else {
+               // NEW PLAYER
+               // Calculate new unique index
+               const usedIndices = new Set(currentGameState.cards.map(c => c.ownerIndex));
+               targetIndex = 0;
+               while(usedIndices.has(targetIndex)) targetIndex++;
+
+               cardsToSend = generateCards(currentGameState.allItems, currentGameState.mode, [playerName], targetIndex);
+               
+               // Update State
+               setGameState(prev => ({
+                   ...prev,
+                   cards: [...prev.cards, ...cardsToSend]
+               }));
+               addNotification(`${playerName} joined the party!`);
+           }
+
+           // Add connection to pool
+           connectionsRef.current.push(conn);
 
            // Send Welcome
            const welcomeMsg: NetworkMessage = {
              type: 'WELCOME',
              payload: {
-               playerIndex: newPlayerIndex,
+               playerIndex: targetIndex,
                playerName: playerName,
-               cards: newCards,
+               cards: cardsToSend,
                theme: currentGameState.theme,
                prize: currentGameState.prize,
                currentCall: currentGameState.currentCall,
@@ -126,13 +142,17 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
             const hasVerifiedBingo = checkForWin(verifiedCells);
 
             if (hasVerifiedBingo) {
-               addNotification(`🎉 ${card.playerName} called BINGO!`);
-               
+               // Mark this card as a winner in local state if not already
                if (!currentGameState.winnerIds.includes(cardId)) {
                    setGameState(prev => ({
                        ...prev,
                        winnerIds: [...prev.winnerIds, cardId]
                    }));
+                   
+                   // Trigger Celebration
+                   setLatestWinner({ name: card.playerName, cardIndex: card.cardIndex });
+                   setTimeout(() => setLatestWinner(null), 6000); // Hide after 6s
+
                    // Play sound
                    if(soundEnabled) {
                      const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3'); 
@@ -141,6 +161,7 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
                    }
                    // Announce to all
                    broadcast({ type: 'BINGO_ANNOUNCED', payload: { playerIndex, cardId } });
+                   addNotification(`🎉 ${card.playerName} called BINGO!`);
                }
             } else {
                addNotification(`⚠️ ${card.playerName} called a false Bingo!`);
@@ -150,9 +171,7 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
       });
 
       conn.on('close', () => {
-        // Handle disconnect? Ideally remove from list, but index management gets tricky.
-        // For simplicity, we keep them in state but they won't receive updates.
-        console.log('Player disconnected');
+        // Player disconnected
       });
     });
 
@@ -185,9 +204,6 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
   };
 
   // Derive players list dynamically from cards
-  // We group cards by ownerIndex to form "Players"
-  // But since we want to handle unlimited, we can't pre-allocate an array.
-  // We just extract unique owners.
   const uniqueOwnerIndices = Array.from(new Set(gameState.cards.map(c => c.ownerIndex))).sort((a,b) => a-b);
   
   const playersList = uniqueOwnerIndices.map(index => {
@@ -196,7 +212,7 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
       index: index,
       name: cards[0]?.playerName || `Player ${index + 1}`,
       cards: cards,
-      connected: true // Simplified: Assume true if they have cards in state
+      connected: true 
     };
   });
 
@@ -221,10 +237,9 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
 
   const currentDisplay = getFormattedCall(gameState.currentCall);
 
-  // Auto-update winners
+  // Auto-update winners (Host visual only)
   useEffect(() => {
     const newWinnerIds: string[] = [];
-    
     const updatedCards = gameState.cards.map(card => {
        const hasLine = checkForWin(card.cells);
        if (hasLine && !gameState.winnerIds.includes(card.id)) {
@@ -303,17 +318,16 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
 
   const startNewRound = (mode: GameMode, items: (string | number)[], themeName: string, prize: string) => {
       // For a new round, we need to regenerate cards for ALL currently connected players.
-      // We rely on connectionsRef.current to know who is still here.
+      // We assume uniqueOwnerIndices represents active players
       
       const newCards: BingoCard[] = [];
-      const connectedConns = connectionsRef.current;
+      const currentCards = gameState.cards;
       
-      // We need names. We can retrieve them from the existing gameState based on index,
-      // assuming order is preserved. Or we could have stored metadata on connection.
-      // Fallback: Use "Player N" if name lost, but typically we find it in current state cards.
-      
-      const playerNamesMap = new Map<number, string>();
-      gameState.cards.forEach(c => playerNamesMap.set(c.ownerIndex, c.playerName));
+      // Get unique players from current state
+      const uniquePlayers = Array.from(new Set(currentCards.map(c => c.ownerIndex)))
+          .map(idx => {
+             return { index: idx, name: currentCards.find(c => c.ownerIndex === idx)?.playerName || 'Player' }
+          });
 
       const newState: GameState = {
           isSetup: false,
@@ -323,40 +337,50 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
           allItems: items,
           calledItems: [],
           currentCall: null,
-          cards: [], // Will be populated below
+          cards: [], 
           winnerIds: []
       };
       
-      // Generate for each connection
-      connectedConns.forEach((conn, index) => {
-         if (!conn.open) return;
-         
-         const name = playerNamesMap.get(index) || `Player ${index+1}`;
-         // Generate for single player
-         const playerCards = generateCards(items, mode, [name], index);
+      // Generate for each known player
+      uniquePlayers.forEach(p => {
+         const playerCards = generateCards(items, mode, [p.name], p.index);
          newCards.push(...playerCards);
-         
-         // Send to player
-          const welcomeMsg: NetworkMessage = {
-            type: 'NEW_GAME',
-            payload: {
-              playerIndex: index,
-              playerName: name,
-              cards: playerCards,
-              theme: themeName,
-              prize: prize,
-              currentCall: null,
-              calledItems: []
-            } as WelcomePayload
-          };
-          conn.send(welcomeMsg);
       });
       
       newState.cards = newCards;
-
       setGameState(newState);
       setShowSetupModal(false);
+      setLatestWinner(null);
       addNotification("New Round Started!");
+
+      // Broadcast 'NEW_GAME' to everyone connected. 
+      // Note: We send to all connections. Clients will look for their playerIndex/Name in the message
+      // or we can just send the specific payload if we mapped connections better.
+      // Simplification: We broadcast the specific payload to the specific connection if possible,
+      // but since we only have a list, we iterate and match logic or send generic reset and let client request?
+      // Better: Send SPECIFIC message to each connection.
+      
+      // We need to match connection to player. We didn't strictly store this map. 
+      // Fallback: Broadcast a 'NEW_ROUND_AVAILABLE' and clients request cards?
+      // Or: Just loop connections, we don't know which connection is which player strictly here 
+      // without extra state. 
+      // FIX: In `JOIN_REQUEST` we pushed to `connectionsRef`.
+      // Let's assume for this "party mode" that we simply broadcast the update to everyone
+      // and let the client filter? No, client needs its own cards.
+      // 
+      // To fix the "Start New Round" for dynamic players correctly without a map:
+      // We will iterate connectionsRef. In a real app we'd map connectionId -> playerIndex.
+      // Here, we will just send a specialized message where possible, OR
+      // we send a message "GAME_RESET_REJOIN" and clients auto-re-request join?
+      // Let's do the simplest robust thing:
+      // We iterate uniquePlayers. For each, we generated cards. 
+      // We actually need to send these to the correct people.
+      // Since we didn't map `connection -> index` in state, let's just broadcast 
+      // a message "NEW_GAME_STARTED" and have clients re-send 'JOIN_REQUEST' automatically?
+      // That's actually very robust for P2P.
+      
+      broadcast({ type: 'GAME_RESET', payload: null });
+      // Clients will see GAME_RESET, clear state, and immediately re-send JOIN_REQUEST with their existing name.
   };
 
   const copyRoomLink = () => {
@@ -370,6 +394,25 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 overflow-hidden relative">
+      {/* Winner Celebration Overlay */}
+      {latestWinner && (
+         <div className="fixed inset-0 z-[60] flex items-center justify-center pointer-events-none">
+             <div className="absolute inset-0 bg-black/20 backdrop-blur-sm animate-fade-in"></div>
+             <div className="relative bg-white border-4 border-yellow-400 p-8 rounded-3xl shadow-2xl flex flex-col items-center gap-4 animate-bounce-in text-center mx-4">
+                 <div className="bg-yellow-100 p-6 rounded-full">
+                    <PartyPopper className="w-16 h-16 text-yellow-600 animate-pulse" />
+                 </div>
+                 <div>
+                    <h2 className="text-4xl font-black text-slate-800 uppercase tracking-widest">BINGO!</h2>
+                    <p className="text-xl text-slate-500 font-bold mt-2">Winner Announced</p>
+                 </div>
+                 <div className="bg-slate-900 text-white px-8 py-3 rounded-xl font-black text-2xl shadow-lg transform -rotate-2">
+                    {latestWinner.name}
+                 </div>
+             </div>
+         </div>
+      )}
+
       {/* Setup Modal Overlay */}
       {showSetupModal && (
           <div className="absolute inset-0 z-50 bg-slate-50 overflow-y-auto">
@@ -440,15 +483,11 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
           </div>
 
           <div className="flex items-center gap-3 overflow-x-auto w-full md:w-auto pb-2 md:pb-0 hide-scrollbar">
-             {gameState.calledItems.slice(1, 6).map((item, idx) => {
-                const display = getFormattedCall(item);
-                return (
-                    <div key={idx} className="bg-slate-100 text-slate-500 rounded px-3 py-1 text-sm font-medium whitespace-nowrap border border-slate-200">
-                    {display.letter && <span className="text-slate-400 mr-0.5 text-xs">{display.letter}</span>}
-                    {display.main}
-                    </div>
-                );
-             })}
+             {gameState.calledItems.slice(1, 6).map((item, idx) => (
+                <div key={idx} className="bg-slate-100 text-slate-500 rounded px-3 py-1 text-sm font-medium whitespace-nowrap border border-slate-200">
+                    {item}
+                </div>
+             ))}
              <div className="ml-auto flex gap-2 pl-2">
                {playersList.length > 0 && (
                    <button 
