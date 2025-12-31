@@ -3,7 +3,8 @@ import Peer, { DataConnection, MediaConnection } from 'peerjs';
 import { BingoCard, NetworkMessage, WelcomePayload, BingoCell, JoinRequestPayload, ChatMessagePayload } from '../types';
 import BingoBoard from './BingoBoard';
 import ChatPanel from './ChatPanel';
-import { Loader2, Wifi, WifiOff, Trophy, AlertCircle, Megaphone, Gift, User, CheckCircle2, XCircle, PartyPopper, Video, VideoOff } from 'lucide-react';
+import { Loader2, Wifi, WifiOff, Trophy, AlertCircle, Megaphone, Gift, User, CheckCircle2, XCircle, PartyPopper, Video, VideoOff, Zap, Grid3X3 } from 'lucide-react';
+import { checkPatternMatch } from '../gameUtils';
 
 interface PlayerClientProps {
   onBack: () => void;
@@ -24,10 +25,14 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
   const [calledItems, setCalledItems] = useState<(string|number)[]>([]);
   const [lastCall, setLastCall] = useState<string | number | null>(null);
   const [announcedWinners, setAnnouncedWinners] = useState<string[]>([]);
+  const [winPatterns, setWinPatterns] = useState<number[][]>([]);
   
   // UI State
   const [confirmingBingoCardId, setConfirmingBingoCardId] = useState<string | null>(null);
   const [winnerAnnouncement, setWinnerAnnouncement] = useState<string | null>(null);
+  
+  // Auto-Play State
+  const [isAutoMark, setIsAutoMark] = useState(true);
 
   // Chat State
   const [chatMessages, setChatMessages] = useState<ChatMessagePayload[]>([]);
@@ -44,22 +49,34 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
   const callRef = useRef<MediaConnection | null>(null);
 
   const connectToRoom = () => {
-    if (!roomId || !playerName) return;
-    setStatus('CONNECTING');
+    const cleanRoomId = roomId.trim().toUpperCase();
+    const cleanName = playerName.trim();
     
-    const peer = new Peer();
+    if (!cleanRoomId || !cleanName) return;
+    setStatus('CONNECTING');
+    setErrorMsg('');
+    
+    const peer = new Peer({ debug: 1 });
     peerRef.current = peer;
 
     peer.on('open', (myId) => {
-      const conn = peer.connect(roomId.toUpperCase());
+      const conn = peer.connect(cleanRoomId, { reliable: true });
       connRef.current = conn;
 
+      const timeout = setTimeout(() => {
+          if (status !== 'CONNECTED' && status !== 'WAITING_FOR_HOST' && status !== 'ERROR') {
+             setErrorMsg("Connection timed out. Host may be offline.");
+             setStatus('ERROR');
+          }
+      }, 10000);
+
       conn.on('open', () => {
+        clearTimeout(timeout);
         setStatus('WAITING_FOR_HOST');
         setErrorMsg('');
         const joinMsg: NetworkMessage = {
             type: 'JOIN_REQUEST',
-            payload: { playerName } as JoinRequestPayload
+            payload: { playerName: cleanName } as JoinRequestPayload
         };
         conn.send(joinMsg);
       });
@@ -70,9 +87,9 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       });
 
       conn.on('error', (err) => {
-        console.error(err);
+        console.error("Conn Error", err);
         setStatus('ERROR');
-        setErrorMsg('Connection lost or failed.');
+        setErrorMsg('Connection lost.');
       });
       
       conn.on('close', () => {
@@ -81,9 +98,16 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       });
     });
 
-    peer.on('error', (err) => {
+    peer.on('error', (err: any) => {
+      console.error("Peer Error", err);
+      if (err.type === 'peer-unavailable') {
+         setErrorMsg(`Room "${cleanRoomId}" not found. Check the code.`);
+      } else if (err.type === 'unavailable-id') {
+         setErrorMsg("ID Collision. Please retry.");
+      } else {
+         setErrorMsg(`Connection Error: ${err.type}`);
+      }
       setStatus('ERROR');
-      setErrorMsg('Could not initialize connection. Check Room ID.');
     });
   };
 
@@ -95,6 +119,7 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       setTheme(payload.theme);
       setPrize(payload.prize);
       setCalledItems(payload.calledItems);
+      setWinPatterns(payload.winPatterns);
       if (payload.currentCall) {
           setCurrentCall(payload.currentCall);
           setLastCall(payload.currentCall);
@@ -106,6 +131,7 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       setTheme(payload.theme);
       setPrize(payload.prize);
       setCalledItems([]);
+      setWinPatterns(payload.winPatterns);
       setCurrentCall(null);
       setLastCall(null);
       setAnnouncedWinners([]);
@@ -176,7 +202,7 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
               setIsCallActive(true);
 
               if (peerRef.current) {
-                  const call = peerRef.current.call(roomId.toUpperCase(), stream);
+                  const call = peerRef.current.call(roomId.trim().toUpperCase(), stream);
                   callRef.current = call;
                   
                   call.on('stream', (hostStream) => {
@@ -194,8 +220,30 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       }
   };
 
-  // ... Local marking logic remains same ...
+  // Local marking logic
+  const updateCardsWithMark = (itemToMark: string | number) => {
+      setCards(prevCards => {
+        return prevCards.map(card => {
+          const updatedCells = card.cells.map(cell => {
+             if (cell.value === itemToMark) return { ...cell, marked: true };
+             return cell;
+          });
+          
+          const hasBingo = checkPatternMatch(updatedCells, winPatterns);
+          return { ...card, cells: updatedCells, hasBingo };
+        });
+      });
+  };
+
+  // Auto-Mark Effect
+  useEffect(() => {
+     if (isAutoMark && currentCall) {
+         updateCardsWithMark(currentCall);
+     }
+  }, [currentCall, isAutoMark, winPatterns]);
+
   const handleCellClick = (cardId: string, cellId: string) => {
+    // Manual Toggle logic overrides auto-mark if user clicks
     setCards(prevCards => {
       const updatedCards = prevCards.map(card => {
         if (card.id !== cardId) return card;
@@ -203,23 +251,9 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
           if (cell.id !== cellId) return cell;
           return { ...cell, marked: !cell.marked };
         });
-        let hasLine = false;
-        // Check bingo logic (omitted for brevity, same as before)
-         for (let i = 0; i < 5; i++) {
-            if (updatedCells.slice(i * 5, (i + 1) * 5).every(c => c.marked || c.isFreeSpace)) hasLine = true;
-        }
-        for (let i = 0; i < 5; i++) {
-            let colComplete = true;
-            for (let j = 0; j < 5; j++) {
-            const cell = updatedCells[i + j * 5];
-            if (!cell.marked && !cell.isFreeSpace) colComplete = false;
-            }
-            if (colComplete) hasLine = true;
-        }
-        if ([0, 6, 12, 18, 24].every(idx => updatedCells[idx].marked || updatedCells[idx].isFreeSpace)) hasLine = true;
-        if ([4, 8, 12, 16, 20].every(idx => updatedCells[idx].marked || updatedCells[idx].isFreeSpace)) hasLine = true;
-
-        return { ...card, cells: updatedCells, hasBingo: hasLine };
+        
+        const hasBingo = checkPatternMatch(updatedCells, winPatterns);
+        return { ...card, cells: updatedCells, hasBingo };
       });
       return updatedCards;
     });
@@ -239,11 +273,8 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
   
   const cancelBingo = () => setConfirmingBingoCardId(null);
   const winningCard = cards.find(c => c.hasBingo && !announcedWinners.includes(c.id));
-  const hasOfficialWin = cards.some(c => announcedWinners.includes(c.id));
 
   if (status !== 'CONNECTED') {
-    // Return existing login UI (simplified for brevity here, assume existing logic)
-    // ... Copying logic from previous file for login ...
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
         <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8">
@@ -307,23 +338,43 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
            </div>
        )}
 
-       <header className="bg-white border-b border-slate-200 p-4 shadow-sm sticky top-0 z-20">
+       <header className="bg-white border-b border-slate-200 p-2 md:p-4 shadow-sm sticky top-0 z-20">
           <div className="max-w-md mx-auto flex items-center justify-between">
-             <div>
-               <div className="text-xs font-bold text-slate-400">PLAYING AS</div>
-               <div className="font-black text-lg text-slate-800">{playerName}</div>
+             <div className="flex items-center gap-2 md:gap-3">
+               <div>
+                  <div className="text-[10px] font-bold text-slate-400">PLAYING AS</div>
+                  <div className="font-black text-sm md:text-lg text-slate-800 truncate max-w-[100px]">{playerName}</div>
+               </div>
+               
+               {/* Auto Mark Toggle */}
+               <button 
+                 onClick={() => setIsAutoMark(!isAutoMark)}
+                 className={`ml-1 px-2 py-1 rounded-lg border text-[10px] font-bold flex items-center gap-1 transition-all ${isAutoMark ? 'bg-purple-100 border-purple-300 text-purple-700' : 'bg-slate-50 text-slate-400'}`}
+               >
+                 <Zap className="w-3 h-3" />
+                 {isAutoMark ? 'AUTO' : 'MANUAL'}
+               </button>
              </div>
              
+             {/* Target Pattern Icon */}
+             <div className="bg-slate-100 p-1.5 rounded border border-slate-200 mx-2" title="Target Pattern">
+                 <div className="grid grid-cols-5 gap-px w-5 h-5">
+                     {Array.from({length: 25}).map((_, i) => (
+                         <div key={i} className={`w-full h-full rounded-[1px] ${winPatterns.some(p => p.includes(i)) ? 'bg-green-500' : 'bg-slate-300'}`}></div>
+                     ))}
+                 </div>
+             </div>
+
              <div className="text-right">
-                <div className="text-xs font-bold text-slate-400">CURRENT CALL</div>
-                <div className="font-black text-xl text-blue-600">{currentCall || 'WAITING...'}</div>
+                <div className="text-[10px] font-bold text-slate-400">CURRENT</div>
+                <div className="font-black text-xl text-blue-600">{currentCall || '--'}</div>
              </div>
           </div>
        </header>
        
-       <div className="bg-slate-800 text-white text-center py-1 text-xs font-bold flex items-center justify-center gap-2 shadow-inner">
-         <Gift className="w-3 h-3 text-yellow-400" />
-         PRIZE: {prize || 'Bragging Rights'}
+       <div className="bg-slate-800 text-white text-center py-1 text-xs font-bold flex items-center justify-center gap-2 shadow-inner px-4">
+         <Gift className="w-3 h-3 text-yellow-400 flex-shrink-0" />
+         <span className="truncate">{prize || 'Bragging Rights'}</span>
       </div>
        
        {/* Video Call Bar */}
@@ -364,9 +415,9 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
        )}
 
        {winningCard && !confirmingBingoCardId && (
-         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 animate-bounce">
-            <button onClick={() => initiateBingoCall(winningCard.id)} className="bg-red-600 text-white border-4 border-red-800 rounded-full px-8 py-4 font-black text-2xl shadow-2xl flex items-center gap-3 hover:bg-red-700 hover:scale-105 transition-all">
-              <Megaphone className="w-8 h-8" /> CALL BINGO!
+         <div className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-40 animate-bounce w-full flex justify-center px-4">
+            <button onClick={() => initiateBingoCall(winningCard.id)} className="bg-red-600 text-white border-4 border-red-800 rounded-full px-8 py-4 font-black text-xl md:text-2xl shadow-2xl flex items-center gap-3 hover:bg-red-700 hover:scale-105 transition-all w-full md:w-auto justify-center">
+              <Megaphone className="w-6 h-6 md:w-8 md:h-8" /> CALL BINGO!
             </button>
          </div>
        )}

@@ -27,6 +27,7 @@ export interface GameState {
   currentCall: string | number | null;
   cards: BingoCard[]; // All cards in play
   winnerIds: string[]; // IDs of cards that won
+  winPatterns: number[][]; // Array of winning configurations (indices 0-24)
 }
 
 // --- Networking Types ---
@@ -48,6 +49,7 @@ export interface WelcomePayload {
   prize: string;
   currentCall: string | number | null;
   calledItems: (string | number)[];
+  winPatterns: number[][];
 }
 
 export interface JoinRequestPayload {
