@@ -4,7 +4,7 @@ import BingoBoard from './BingoBoard';
 import GameSetup from './GameSetup';
 import ChatPanel from './ChatPanel';
 import { generateCards, checkPatternMatch } from '../gameUtils';
-import { RefreshCw, Play, Users, Trophy, LayoutGrid, ChevronLeft, ChevronRight, Volume2, VolumeX, Link, Copy, BellRing, Gift, X, UserPlus, PartyPopper, Megaphone, XCircle, Video, VideoOff, Mic, MicOff, Pause, Zap, Grid3X3 } from 'lucide-react';
+import { RefreshCw, Play, Users, Trophy, LayoutGrid, ChevronLeft, ChevronRight, Volume2, VolumeX, Link, Copy, BellRing, Gift, X, UserPlus, PartyPopper, Megaphone, XCircle, Video, VideoOff, Mic, MicOff, Pause, Zap, Grid3X3, Activity } from 'lucide-react';
 import Peer, { DataConnection, MediaConnection } from 'peerjs';
 
 interface ActiveGameProps {
@@ -34,6 +34,7 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
   
   // Networking State
   const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [connectedCount, setConnectedCount] = useState(0);
   
   // Chat State
   const [chatMessages, setChatMessages] = useState<ChatMessagePayload[]>([]);
@@ -54,6 +55,20 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
   useEffect(() => {
     gameStateRef.current = gameState;
   }, [gameState]);
+
+  // Heartbeat & Connection Pruning
+  useEffect(() => {
+    const interval = setInterval(() => {
+        // Filter out closed connections
+        connectionsRef.current = connectionsRef.current.filter(conn => conn.open);
+        setConnectedCount(connectionsRef.current.length);
+        
+        // Send heartbeat to keep connections alive
+        broadcast({ type: 'PING' } as any);
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   // Auto-Call Logic
   useEffect(() => {
@@ -86,7 +101,13 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
 
   const broadcast = (msg: NetworkMessage) => {
     connectionsRef.current.forEach(conn => {
-        if(conn.open) conn.send(msg);
+        if(conn.open) {
+            try {
+                conn.send(msg);
+            } catch (e) {
+                console.warn("Failed to send to peer", conn.peer);
+            }
+        }
     });
   };
 
@@ -148,7 +169,16 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
   useEffect(() => {
     const customId = Math.random().toString(36).slice(2, 10).padEnd(8, 'X').toUpperCase();
     
-    const peer = new Peer(customId, { debug: 1 });
+    // Explicitly configure Peer to be more robust
+    const peer = new Peer(customId, { 
+        debug: 1,
+        config: {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+            ]
+        }
+    });
     
     peer.on('open', (id) => {
       setRoomCode(id);
@@ -159,7 +189,7 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
             addNotification("Room Code collision. Please reload.");
         } else if (err.type === 'peer-unavailable') {
         } else {
-             addNotification(`Connection Error: ${err.type}`);
+             console.warn("Peer Error", err);
         }
     });
 
@@ -178,6 +208,16 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
     });
 
     peer.on('connection', (conn) => {
+      conn.on('open', () => {
+          connectionsRef.current.push(conn);
+          setConnectedCount(connectionsRef.current.length);
+      });
+
+      conn.on('close', () => {
+          connectionsRef.current = connectionsRef.current.filter(c => c !== conn);
+          setConnectedCount(connectionsRef.current.length);
+      });
+
       conn.on('data', (data: any) => {
         const msg = data as NetworkMessage;
 
@@ -208,8 +248,6 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
                }));
                addNotification(`${playerName} joined the party!`);
            }
-
-           connectionsRef.current.push(conn);
 
            const welcomeMsg: NetworkMessage = {
              type: 'WELCOME',
@@ -248,11 +286,7 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
         } else if (msg.type === 'CHAT_MESSAGE') {
             const chatPayload = msg.payload as ChatMessagePayload;
             setChatMessages(prev => [...prev, chatPayload]);
-            connectionsRef.current.forEach(c => {
-                if (c.open && c.peer !== conn.peer) {
-                    c.send(msg);
-                }
-            });
+            broadcast(msg); // Relay to others
         }
       });
     });
@@ -268,11 +302,15 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
   const uniqueOwnerIndices = Array.from(new Set<number>(gameState.cards.map(c => c.ownerIndex))).sort((a,b) => a-b);
   const playersList = uniqueOwnerIndices.map(index => {
     const cards = gameState.cards.filter(c => c.ownerIndex === index);
+    const playerName = cards[0]?.playerName;
+    // Check if any active connection maps to this player name
+    const isOnline = connectionsRef.current.some(c => c.open && playerMapRef.current.get(c.peer) === playerName);
+    
     return {
       index: index,
-      name: cards[0]?.playerName || `Player ${index + 1}`,
+      name: playerName || `Player ${index + 1}`,
       cards: cards,
-      connected: true 
+      connected: index === 0 ? true : isOnline
     };
   });
   const activePlayer = playersList[currentPlayerIndex];
@@ -539,6 +577,11 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
              ))}
              
              <div className="ml-auto flex gap-2 pl-2 border-l border-slate-200">
+               <div className="flex items-center gap-1 text-slate-400 mr-2" title="Players Connected">
+                   <Activity className="w-4 h-4" />
+                   <span className="text-xs font-bold">{connectedCount}</span>
+               </div>
+               
                {playersList.length > 0 && (
                    <button onClick={() => setViewMode(viewMode === 'FOCUS' ? 'ALL' : 'FOCUS')} className="p-2 text-slate-600 hover:bg-slate-100 rounded-lg" title="Toggle View">
                      {viewMode === 'FOCUS' ? <LayoutGrid className="w-5 h-5" /> : <Users className="w-5 h-5" />}
@@ -619,7 +662,7 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
                 </div>
             ) : (
                 viewMode === 'FOCUS' ? (
-                <div className="w-full max-w-xl flex flex-col h-full">
+                <div className="w-full max-w-2xl flex flex-col h-full">
                     {/* Pagination */}
                     <div className="flex items-center justify-between gap-2 mb-4 sticky top-0 z-10 py-2 bg-slate-50/95 backdrop-blur-sm">
                         <button onClick={() => setCurrentPlayerIndex(prev => Math.max(0, prev - 1))} disabled={currentPlayerIndex === 0} className="p-2 bg-white rounded-lg shadow border disabled:opacity-30">
@@ -627,11 +670,12 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
                         </button>
                         
                         {activePlayer && (
-                            <div className="flex-1 text-center bg-white px-2 py-1.5 rounded-lg shadow-sm border border-slate-200 min-w-0">
-                                <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-0.5">
+                            <div className="flex-1 text-center bg-white px-2 py-1.5 rounded-lg shadow-sm border border-slate-200 min-w-0 flex items-center justify-center gap-2">
+                                <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
                                     Player {currentPlayerIndex + 1}/{playersList.length}
                                 </div>
                                 <div className="text-lg font-black text-slate-800 truncate leading-none pb-0.5">{activePlayer.name}</div>
+                                {activePlayer.connected ? <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div> : <div className="w-2 h-2 rounded-full bg-red-400"></div>}
                             </div>
                         )}
         
@@ -641,7 +685,7 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
                     </div>
                     
                     {activePlayer && (
-                        <div className="space-y-6 pb-20">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pb-20">
                             {activePlayer.cards.map((card, idx) => (
                                 <div key={card.id}>
                                     <div className="text-xs font-bold text-slate-400 mb-1 pl-1">Card #{idx + 1}</div>
@@ -661,7 +705,7 @@ const ActiveGame: React.FC<ActiveGameProps> = ({ initialState, onExit }) => {
                         const playerWins = player.cards.filter(c => c.hasBingo).length;
                         return (
                             <button key={player.index} onClick={() => { setCurrentPlayerIndex(idx); setViewMode('FOCUS'); }} className={`p-3 rounded-xl border-2 text-left transition-all hover:scale-[1.02] relative ${playerWins > 0 ? 'bg-yellow-50 border-yellow-400' : 'bg-white border-slate-200 hover:border-blue-300'}`}>
-                            {player.connected && <div className="absolute top-2 right-2 w-2 h-2 bg-green-500 rounded-full" title="Connected"></div>}
+                            {player.connected ? <div className="absolute top-2 right-2 w-2 h-2 bg-green-500 rounded-full" title="Connected"></div> : <div className="absolute top-2 right-2 w-2 h-2 bg-red-400 rounded-full" title="Offline"></div>}
                             <div className="font-bold text-sm truncate pr-2 mb-2">
                                 {player.name}
                                 {player.index === 0 && <span className="block text-[9px] text-blue-500 uppercase">HOST</span>}

@@ -3,7 +3,7 @@ import Peer, { DataConnection, MediaConnection } from 'peerjs';
 import { BingoCard, NetworkMessage, WelcomePayload, BingoCell, JoinRequestPayload, ChatMessagePayload } from '../types';
 import BingoBoard from './BingoBoard';
 import ChatPanel from './ChatPanel';
-import { Loader2, Wifi, WifiOff, Trophy, AlertCircle, Megaphone, Gift, User, CheckCircle2, XCircle, PartyPopper, Video, VideoOff, Zap, Grid3X3 } from 'lucide-react';
+import { Loader2, Wifi, WifiOff, Trophy, AlertCircle, Megaphone, Gift, User, CheckCircle2, XCircle, PartyPopper, Video, VideoOff, Zap, Grid3X3, RefreshCw } from 'lucide-react';
 import { checkPatternMatch } from '../gameUtils';
 
 interface PlayerClientProps {
@@ -56,7 +56,15 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
     setStatus('CONNECTING');
     setErrorMsg('');
     
-    const peer = new Peer({ debug: 1 });
+    const peer = new Peer({ 
+        debug: 1,
+        config: {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+            ]
+        }
+    });
     peerRef.current = peer;
 
     peer.on('open', (myId) => {
@@ -68,7 +76,7 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
              setErrorMsg("Connection timed out. Host may be offline.");
              setStatus('ERROR');
           }
-      }, 10000);
+      }, 15000);
 
       conn.on('open', () => {
         clearTimeout(timeout);
@@ -94,7 +102,7 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       
       conn.on('close', () => {
           setStatus('ERROR');
-          setErrorMsg('Host ended the session.');
+          setErrorMsg('Disconnected from host.');
       });
     });
 
@@ -168,6 +176,8 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
       setTimeout(() => setWinnerAnnouncement(null), 5000);
     } else if (msg.type === 'CHAT_MESSAGE') {
         setChatMessages(prev => [...prev, msg.payload]);
+    } else if (msg.type === 'PING' as any) {
+        // Reply with pong or just acknowledgement to keep connection alive
     }
   };
 
@@ -277,8 +287,14 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
   if (status !== 'CONNECTED') {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
-        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8">
-           <div className="text-center mb-6">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 relative overflow-hidden">
+           {status === 'ERROR' && (
+             <div className="absolute top-0 left-0 w-full bg-red-500 text-white text-center text-xs font-bold py-1">
+                Disconnected
+             </div>
+           )}
+
+           <div className="text-center mb-6 mt-2">
              <h2 className="text-2xl font-black text-slate-800">Join Party</h2>
              <p className="text-slate-500">Enter the Room Code from the host screen</p>
            </div>
@@ -297,7 +313,8 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
              </div>
              {errorMsg && <div className="p-3 bg-red-50 text-red-600 rounded-lg flex items-center gap-2 text-sm"><AlertCircle className="w-4 h-4" /> {errorMsg}</div>}
              <button onClick={connectToRoom} disabled={!roomId || !playerName || status === 'CONNECTING'} className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
-               {status === 'CONNECTING' ? <Loader2 className="animate-spin" /> : <Wifi />} Connect
+               {status === 'CONNECTING' ? <Loader2 className="animate-spin" /> : (status === 'ERROR' ? <RefreshCw /> : <Wifi />)} 
+               {status === 'CONNECTING' ? 'Connecting...' : (status === 'ERROR' ? 'Retry Connection' : 'Connect')}
              </button>
              <button onClick={onBack} className="w-full text-sm text-slate-400 hover:text-slate-600">Back to Home</button>
            </div>
@@ -423,16 +440,19 @@ const PlayerClient: React.FC<PlayerClientProps> = ({ onBack }) => {
        )}
 
        <main className="flex-1 p-4 overflow-y-auto">
-         <div className="max-w-md mx-auto space-y-6 pb-24">
-            {cards.map((card, i) => (
-               <div key={card.id}>
-                 <div className="flex items-center justify-between mb-1 ml-1">
-                    <div className="text-xs font-bold text-slate-400">CARD #{i+1}</div>
-                    {announcedWinners.includes(card.id) && <span className="text-xs font-bold bg-green-100 text-green-700 px-2 rounded">Winner</span>}
-                 </div>
-                 <BingoBoard card={card} onCellClick={(cellId) => handleCellClick(card.id, cellId)} />
-               </div>
-            ))}
+         <div className="max-w-md mx-auto pb-24">
+            {/* Grid Layout for Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 md:gap-6">
+                {cards.map((card, i) => (
+                   <div key={card.id} className="flex flex-col">
+                     <div className="flex items-center justify-between mb-1 ml-1">
+                        <div className="text-xs font-bold text-slate-400">CARD #{i+1}</div>
+                        {announcedWinners.includes(card.id) && <span className="text-xs font-bold bg-green-100 text-green-700 px-2 rounded">Winner</span>}
+                     </div>
+                     <BingoBoard card={card} onCellClick={(cellId) => handleCellClick(card.id, cellId)} />
+                   </div>
+                ))}
+            </div>
          </div>
        </main>
     </div>
